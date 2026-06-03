@@ -1,0 +1,20 @@
+# --- Core HTTP + parsing ---
+requests>=2.31
+beautifulsoup4>=4.12
+lxml>=5.0
+tldextract>=5.1
+
+# --- LLM (OpenAI-compatible: OpenRouter, Groq, Ollama, DeepSeek, Gemini-compat, etc.) ---
+openai>=1.40
+
+# --- Free web search (company name -> website resolution) ---
+ddgs>=6.0
+
+# --- Headless browser for deep crawl of JS-heavy career pages ---
+playwright>=1.44
+
+# --- Config, resilience, models, CLI UX ---
+python-dotenv>=1.0
+tenacity>=8.2
+pydantic>=2.6
+rich>=13.7

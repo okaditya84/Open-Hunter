@@ -24,10 +24,12 @@ class RecruiteeClient(ATSClient):
         return None
 
     def exists(self, token: str) -> bool:
+        # Require at least one real offer: some generic subdomains answer 200
+        # with an empty/placeholder list, which would shadow the true ATS.
         data = self.http.get_json(
             f"https://{token}.recruitee.com/api/offers/", check_robots=False
         )
-        return bool(data and "offers" in data)
+        return bool(data and len(data.get("offers", []) or []) > 0)
 
     def fetch_jobs(self, token: str, company_name: str) -> List[Job]:
         url = f"https://{token}.recruitee.com/api/offers/"

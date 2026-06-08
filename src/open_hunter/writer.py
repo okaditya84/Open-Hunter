@@ -9,7 +9,7 @@ Two files per run, both timestamped:
 from __future__ import annotations
 
 import csv
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable, List, Tuple
 
@@ -35,17 +35,36 @@ def _stamp() -> str:
     return datetime.now().strftime("%Y%m%d_%H%M%S")
 
 
+def _within_age(job: Job, cutoff: str) -> bool:
+    """Keep a job if its posted_date is on/after cutoff (ISO yyyy-mm-dd).
+
+    Jobs with no posted_date are KEPT (we can't confirm age and don't want to
+    silently drop real, possibly-recent postings) — the posted_date column
+    stays blank so you can see which ones lack a date.
+    """
+    if not cutoff:
+        return True
+    if not job.posted_date:
+        return True
+    return job.posted_date >= cutoff
+
+
 def write_jobs(
     output_dir: Path,
     jobs: Iterable[Job],
     *,
     include_no: bool = False,
     stamp: str = "",
+    max_age_days: int = 0,
 ) -> Path:
     stamp = stamp or _stamp()
     path = output_dir / f"jobs_{stamp}.csv"
+    cutoff = ""
+    if max_age_days and max_age_days > 0:
+        cutoff = (date.today() - timedelta(days=max_age_days)).isoformat()
     rows = [
-        j for j in jobs if include_no or j.relevance != "no"
+        j for j in jobs
+        if (include_no or j.relevance != "no") and _within_age(j, cutoff)
     ]
     # Most relevant first, then by company.
     rows.sort(
@@ -101,13 +120,15 @@ def write_all(
     results: List[CompanyResult],
     *,
     include_no: bool = False,
+    max_age_days: int = 0,
 ) -> Tuple[Path, Path]:
     stamp = _stamp()
     all_jobs: List[Job] = []
     for r in results:
         all_jobs.extend(r.jobs)
     jobs_path = write_jobs(
-        output_dir, all_jobs, include_no=include_no, stamp=stamp
+        output_dir, all_jobs, include_no=include_no, stamp=stamp,
+        max_age_days=max_age_days,
     )
     report_path = write_report(output_dir, results, stamp=stamp)
     return jobs_path, report_path

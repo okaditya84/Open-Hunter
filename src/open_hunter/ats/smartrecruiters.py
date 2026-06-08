@@ -29,11 +29,14 @@ class SmartRecruitersClient(ATSClient):
         return None
 
     def exists(self, token: str) -> bool:
+        # SmartRecruiters returns 200 with an empty list for unknown tokens,
+        # so we must require at least one real posting to avoid false matches
+        # that would shadow the company's true ATS.
         data = self.http.get_json(
             f"https://api.smartrecruiters.com/v1/companies/{token}/postings?limit=1",
             check_robots=False,
         )
-        return bool(data and "content" in data)
+        return bool(data and data.get("totalFound", 0) > 0)
 
     def fetch_jobs(self, token: str, company_name: str) -> List[Job]:
         jobs: List[Job] = []

@@ -14,6 +14,7 @@ from .input_loader import load_companies
 from .llm import LLMClient, LLMError
 from .logging_util import get_logger, setup_logging
 from .pipeline import Pipeline
+from .profile_loader import load_candidate_profile
 from .writer import write_all
 
 console = Console()
@@ -48,6 +49,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Also include jobs judged not relevant in the jobs CSV.",
     )
     p.add_argument(
+        "--max-age-days",
+        type=int,
+        default=0,
+        help="Only keep jobs posted within the last N days (e.g. 60). "
+        "Jobs with no posting date are kept (date can't be confirmed). "
+        "0 = no date filter.",
+    )
+    p.add_argument(
         "--limit", type=int, help="Only process the first N companies (testing)."
     )
     p.add_argument(
@@ -57,6 +66,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-browser",
         action="store_true",
         help="Disable the Playwright fallback for this run.",
+    )
+    p.add_argument(
+        "--profile-dir",
+        help="Custom directory path containing candidate CV/Resumes/LinkedIn PDFs.",
+    )
+    p.add_argument(
+        "--github-user",
+        help="Custom GitHub username for candidate profile compilation.",
+    )
+    p.add_argument(
+        "--no-profile",
+        action="store_true",
+        help="Skip automatic candidate profile loading and matching.",
     )
     p.add_argument("-v", "--verbose", action="store_true", help="Debug logging.")
     p.add_argument(
@@ -95,9 +117,14 @@ def _check_llm(config) -> int:
             [{"role": "user", "content": "Reply with the single word: ok"}],
             max_tokens=10,
         )
+        endpoint = (
+            f"bedrock ({config.llm_region})"
+            if config.is_bedrock
+            else config.llm_base_url
+        )
         console.print(
             f"[green]LLM OK[/green] — provider responded: {reply!r}\n"
-            f"  base_url: {config.llm_base_url}\n  model: {config.llm_model}"
+            f"  endpoint: {endpoint}\n  model: {config.llm_model}"
         )
         return 0
     except (LLMError, Exception) as exc:  # noqa: BLE001
@@ -176,14 +203,39 @@ def main(argv=None) -> int:
             "limited mode (ATS sources only, no relevance scoring)."
         )
 
+    # Load candidate profile
+    profile = None
+    if not args.no_profile:
+        try:
+            llm_client = LLMClient(config) if config.llm_configured else None
+            p_dir = Path(args.profile_dir).expanduser() if args.profile_dir else None
+            profile = load_candidate_profile(
+                config,
+                profile_dir=p_dir,
+                github_user=args.github_user,
+                llm=llm_client,
+            )
+            if profile:
+                console.print(
+                    f"[green]Loaded candidate profile for {profile.get('name', 'candidate')}:[/green]"
+                )
+                console.print(f"  Summary: {profile.get('experience_summary', '')}")
+                console.print(f"  Target:  {profile.get('experience_level_restriction', '')}")
+        except Exception as exc:  # noqa: BLE001
+            console.print(f"[yellow]Warning loading candidate profile:[/yellow] {exc}")
+
     pipeline = Pipeline(config)
     try:
-        results = pipeline.run(companies, criteria)
+        results = pipeline.run(
+            companies, criteria, profile=profile,
+            max_age_days=args.max_age_days,
+        )
     finally:
         pipeline.close()
 
     jobs_path, report_path = write_all(
-        config.output_dir, results, include_no=args.include_no
+        config.output_dir, results, include_no=args.include_no,
+        max_age_days=args.max_age_days,
     )
 
     _summary(results)

@@ -57,7 +57,13 @@ class Pipeline:
         )
 
     # ------------------------------------------------------------------ #
-    def run(self, companies: List[CompanyInput], criteria: str) -> List[CompanyResult]:
+    def run(
+        self,
+        companies: List[CompanyInput],
+        criteria: str,
+        profile: Optional[dict] = None,
+        max_age_days: int = 0,
+    ) -> List[CompanyResult]:
         results: List[CompanyResult] = []
         total = len(companies)
         log.info("processing %d companies (concurrency=%d)",
@@ -88,8 +94,33 @@ class Pipeline:
         # Global de-duplication across companies.
         all_jobs = self._dedupe([j for r in results for j in r.jobs])
 
-        # Score relevance (inclusive) in one pass.
-        Matcher(self.llm, criteria).score(all_jobs)
+        # Pre-filter by posting date BEFORE the (costly) LLM matching, so we
+        # never pay to score stale jobs. Jobs without a date are kept.
+        if max_age_days and max_age_days > 0:
+            from datetime import date, timedelta
+
+            cutoff = (date.today() - timedelta(days=max_age_days)).isoformat()
+            before = len(all_jobs)
+            kept = [
+                j for j in all_jobs
+                if (not j.posted_date) or j.posted_date >= cutoff
+            ]
+            # Drop the filtered-out jobs from each company's result too, so the
+            # report and CSV reflect what was actually considered.
+            keep_ids = {id(j) for j in kept}
+            for r in results:
+                r.jobs = [j for j in r.jobs if id(j) in keep_ids]
+            log.info(
+                "date filter (<= %d days, cutoff %s): kept %d of %d jobs",
+                max_age_days, cutoff, len(kept), before,
+            )
+            all_jobs = kept
+
+        # Score relevance (inclusive), batches scored concurrently.
+        Matcher(
+            self.llm, criteria, profile,
+            concurrency=self.config.matcher_concurrency,
+        ).score(all_jobs)
 
         return results
 

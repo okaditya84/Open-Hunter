@@ -52,9 +52,11 @@ def _get_int(name: str, default: int) -> int:
 @dataclass(frozen=True)
 class Config:
     # --- LLM ---
+    llm_provider: str
     llm_base_url: str
     llm_api_key: str
     llm_model: str
+    llm_region: str
     llm_max_tokens: int
     llm_temperature: float
 
@@ -64,16 +66,55 @@ class Config:
     http_timeout: float
     enable_browser: bool
     max_concurrency: int
+    matcher_concurrency: int
     user_agent: str
+
+    # --- Vision (for the apply agent's visual form QA) ---
+    vision_model: str
+    enable_vision: bool
 
     # --- Paths ---
     output_dir: Path
     logs_dir: Path
 
     @property
+    def is_bedrock(self) -> bool:
+        return self.llm_provider == "bedrock"
+
+    @property
     def llm_configured(self) -> bool:
         """True only when we have everything needed to call the LLM."""
+        if self.is_bedrock:
+            # Native Bedrock (Converse) needs a key, model and region only.
+            return bool(self.llm_api_key and self.llm_model and self.llm_region)
         return bool(self.llm_base_url and self.llm_api_key and self.llm_model)
+
+
+def _resolve_llm() -> tuple:
+    """Resolve (provider, base_url, api_key, region) across providers.
+
+    For OpenAI-compatible providers, only base_url/api_key/model matter.
+    For Amazon Bedrock we use the native Converse API (full model catalog,
+    including Claude), so we mainly need a region + bearer key:
+      * region from LLM_REGION / AWS_REGION (default us-east-1),
+      * api_key falls back to the standard AWS_BEARER_TOKEN_BEDROCK env var.
+    """
+    provider = (os.getenv("LLM_PROVIDER", "").strip().lower() or "openai")
+    base_url = os.getenv("LLM_BASE_URL", "").strip()
+    api_key = os.getenv("LLM_API_KEY", "").strip()
+    region = ""
+
+    if provider == "bedrock":
+        region = (
+            os.getenv("LLM_REGION")
+            or os.getenv("AWS_REGION")
+            or os.getenv("AWS_DEFAULT_REGION")
+            or "us-east-1"
+        ).strip()
+        if not api_key:
+            api_key = os.getenv("AWS_BEARER_TOKEN_BEDROCK", "").strip()
+
+    return provider, base_url, api_key, region
 
 
 def load_config() -> Config:
@@ -82,10 +123,14 @@ def load_config() -> Config:
     output_dir.mkdir(exist_ok=True)
     logs_dir.mkdir(exist_ok=True)
 
+    provider, base_url, api_key, region = _resolve_llm()
+
     return Config(
-        llm_base_url=os.getenv("LLM_BASE_URL", "").strip(),
-        llm_api_key=os.getenv("LLM_API_KEY", "").strip(),
+        llm_provider=provider,
+        llm_base_url=base_url,
+        llm_api_key=api_key,
         llm_model=os.getenv("LLM_MODEL", "").strip(),
+        llm_region=region,
         llm_max_tokens=_get_int("LLM_MAX_TOKENS", 2048),
         llm_temperature=_get_float("LLM_TEMPERATURE", 0.0),
         respect_robots=_get_bool("RESPECT_ROBOTS", True),
@@ -93,6 +138,9 @@ def load_config() -> Config:
         http_timeout=_get_float("HTTP_TIMEOUT", 25.0),
         enable_browser=_get_bool("ENABLE_BROWSER", True),
         max_concurrency=_get_int("MAX_CONCURRENCY", 4),
+        matcher_concurrency=_get_int("MATCHER_CONCURRENCY", 8),
+        vision_model=os.getenv("VISION_MODEL", "qwen/qwen3.5-9b").strip(),
+        enable_vision=_get_bool("ENABLE_VISION", True),
         user_agent=os.getenv(
             "USER_AGENT", "OpenHunter/1.0 (+job-search-assistant)"
         ).strip(),

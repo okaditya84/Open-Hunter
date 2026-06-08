@@ -28,11 +28,14 @@ class WorkableClient(ATSClient):
         return None
 
     def exists(self, token: str) -> bool:
+        # Workable returns 200 with an empty "jobs" list for unknown accounts,
+        # so require at least one real job to avoid false matches that would
+        # shadow the company's true ATS.
         data = self.http.get_json(
             f"https://apply.workable.com/api/v1/widget/accounts/{token}",
             check_robots=False,
         )
-        return bool(data and "jobs" in data)
+        return bool(data and len(data.get("jobs", []) or []) > 0)
 
     def fetch_jobs(self, token: str, company_name: str) -> List[Job]:
         url = (

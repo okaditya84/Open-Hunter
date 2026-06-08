@@ -13,6 +13,7 @@ Two call styles are exposed:
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any, List, Optional
 
@@ -38,13 +39,44 @@ class LLMClient:
     def __init__(self, config: Config):
         if not config.llm_configured:
             raise LLMError(
-                "LLM is not configured. Set LLM_BASE_URL, LLM_API_KEY and "
-                "LLM_MODEL in your .env file."
+                "LLM is not configured. Set the provider variables in your "
+                ".env (LLM_BASE_URL/LLM_API_KEY/LLM_MODEL, or for Bedrock: "
+                "LLM_PROVIDER=bedrock + LLM_API_KEY + LLM_REGION + LLM_MODEL)."
             )
         self.config = config
-        self.client = OpenAI(
-            base_url=config.llm_base_url,
-            api_key=config.llm_api_key,
+        self.client = None
+        self._bedrock = None
+
+        if config.is_bedrock:
+            self._init_bedrock()
+        else:
+            self.client = OpenAI(
+                base_url=config.llm_base_url,
+                api_key=config.llm_api_key,
+            )
+
+    def _init_bedrock(self) -> None:
+        """Native Amazon Bedrock client via the Converse API (boto3).
+
+        Converse exposes the full Bedrock catalog (Claude, Llama, Nova,
+        Mistral, ...), unlike the OpenAI-compatible endpoint which only serves
+        a curated subset. Authentication uses the Bedrock API key (bearer
+        token) through the standard AWS_BEARER_TOKEN_BEDROCK env var.
+        """
+        try:
+            import boto3
+        except ImportError as exc:  # pragma: no cover
+            raise LLMError(
+                "Bedrock provider needs boto3. Run: pip install boto3"
+            ) from exc
+
+        if self.config.llm_api_key and not os.environ.get(
+            "AWS_BEARER_TOKEN_BEDROCK"
+        ):
+            os.environ["AWS_BEARER_TOKEN_BEDROCK"] = self.config.llm_api_key
+
+        self._bedrock = boto3.client(
+            "bedrock-runtime", region_name=self.config.llm_region or "us-east-1"
         )
 
     @retry(
@@ -61,6 +93,9 @@ class LLMClient:
         max_tokens: Optional[int] = None,
         json_mode: bool = False,
     ) -> str:
+        if self.config.is_bedrock:
+            return self._chat_bedrock(messages, temperature, max_tokens)
+
         kwargs: dict = {
             "model": self.config.llm_model,
             "messages": messages,
@@ -79,14 +114,91 @@ class LLMClient:
 
         try:
             resp = self.client.chat.completions.create(**kwargs)
-        except Exception as exc:  # noqa: BLE001
-            if json_mode and "response_format" in str(exc).lower():
+        except Exception:  # noqa: BLE001
+            # Some providers/models (varies across the Bedrock catalog) reject
+            # response_format. If we asked for it, retry once without it — our
+            # complete_json() still extracts JSON defensively from plain text.
+            if "response_format" in kwargs:
                 kwargs.pop("response_format", None)
                 resp = self.client.chat.completions.create(**kwargs)
             else:
                 raise
         content = resp.choices[0].message.content or ""
         return content.strip()
+
+    def _chat_bedrock(
+        self,
+        messages: List[dict],
+        temperature: Optional[float],
+        max_tokens: Optional[int],
+    ) -> str:
+        """Call Bedrock's Converse API, translating OpenAI-style messages."""
+        system_blocks = []
+        conv = []
+        for m in messages:
+            role = m.get("role")
+            text = m.get("content") or ""
+            if not text:
+                continue
+            if role == "system":
+                system_blocks.append({"text": text})
+            else:
+                conv.append(
+                    {
+                        "role": "assistant" if role == "assistant" else "user",
+                        "content": [{"text": text}],
+                    }
+                )
+
+        kwargs: dict = {
+            "modelId": self.config.llm_model,
+            "messages": conv,
+            "inferenceConfig": {
+                "maxTokens": max_tokens or self.config.llm_max_tokens,
+                "temperature": (
+                    self.config.llm_temperature
+                    if temperature is None
+                    else temperature
+                ),
+            },
+        }
+        if system_blocks:
+            kwargs["system"] = system_blocks
+
+        resp = self._bedrock.converse(**kwargs)
+        parts = resp["output"]["message"]["content"]
+        text = "".join(p.get("text", "") for p in parts)
+        return text.strip()
+
+    @property
+    def vision_available(self) -> bool:
+        # Vision uses the OpenAI-compatible image_url content format, available
+        # on the standard client (e.g. OpenRouter), not the Bedrock path.
+        return self.client is not None
+
+    def vision_json(
+        self, prompt: str, image_path: str, model: str,
+        *, max_tokens: int = 900,
+    ) -> Any:
+        """Send an image + prompt to a vision model, parse JSON from the reply."""
+        if self.client is None:
+            raise LLMError("vision requires an OpenAI-compatible client")
+        import base64
+
+        with open(image_path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode()
+        content = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url",
+             "image_url": {"url": f"data:image/png;base64,{b64}"}},
+        ]
+        resp = self.client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": content}],
+            temperature=0,
+            max_tokens=max_tokens,
+        )
+        return _extract_json(resp.choices[0].message.content or "")
 
     def complete_json(
         self,

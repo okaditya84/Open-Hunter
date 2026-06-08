@@ -73,6 +73,36 @@ Verify it works:
 > scoring. Without it, Open Hunter still runs in a limited mode (ATS sources via
 > verified probing only, no relevance filtering).
 
+#### Using Amazon Bedrock
+For Bedrock, Open Hunter uses the native **Converse API** (via `boto3`), which
+exposes the full catalog including Claude. You authenticate with a single
+Bedrock API key. In `.env`:
+
+```
+LLM_PROVIDER=bedrock
+LLM_API_KEY=<your Bedrock API key>          # or set AWS_BEARER_TOKEN_BEDROCK instead
+LLM_REGION=us-east-1                         # region where you enabled model access
+LLM_MODEL=us.anthropic.claude-sonnet-4-6    # any Bedrock model id (see below)
+# Leave LLM_BASE_URL blank for Bedrock.
+```
+
+**Get a Bedrock API key (one-time):**
+1. Sign in to the [AWS Console](https://console.aws.amazon.com/) and open **Amazon Bedrock**.
+2. **Model access** (left sidebar) → enable access to the model(s) you want
+   (e.g. *Anthropic Claude*, *Meta Llama*, *Amazon Nova*). This is required.
+3. In the left sidebar, open **API keys** → **Long-term API keys** →
+   **Generate**. Pick an expiry, then **Generate**. Copy the key now — it's
+   shown only once. Paste it into `LLM_API_KEY`.
+4. Set `LLM_REGION` to the region you enabled the model in, and `LLM_MODEL` to a
+   model id, e.g.:
+   - `us.anthropic.claude-sonnet-4-6` — Claude (cross-region inference profile)
+   - `openai.gpt-oss-120b` — OpenAI open-weight model on Bedrock
+   - `us.meta.llama3-3-70b-instruct-v1:0` — Llama
+   - `us.amazon.nova-pro-v1:0` — Amazon Nova
+5. Verify: `.venv/bin/python run.py --check-llm`
+
+Cost comes out of your AWS account/credits, billed per token by Bedrock.
+
 ---
 
 ## Usage

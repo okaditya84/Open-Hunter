@@ -7,6 +7,9 @@ tldextract>=5.1
 # --- LLM (OpenAI-compatible: OpenRouter, Groq, Ollama, DeepSeek, Gemini-compat, etc.) ---
 openai>=1.40
 
+# --- Amazon Bedrock (native Converse API: full catalog incl. Claude) ---
+boto3>=1.40
+
 # --- Free web search (company name -> website resolution) ---
 ddgs>=6.0
 
